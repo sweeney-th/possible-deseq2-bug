@@ -1,17 +1,21 @@
 ---
-title: "DESeq2 Factor Error Message"
+title: "Possible Error Message Bug in DESeq2"
 output:
   pdf_document: default
   html_document: default
 ---
 
-After being sent some bad data, I observed what I think is a bug in which DESeq2 misdiagnoses user input containing factors. The error does no harm in and of itself, but if a user takes what seemss a reasonable step based on the error message, R's type system will silently invalidate the results. We will need a basic counts file to demonstrate and reproduce the issues, so we will recreate the one from the vignette:
+This report highlights a potential bug in an error message in DESeq2's `DESeqDataSetFromMatrix`. While it causes no harm to the data, it can mislead an inexperienced user in such a way as to compromise the results of an analysis.
 
 ## TL;DNR
 
-When using DESeq2 Passing a `data.frame` containing a column of type `factor` results in an error message stating the user has entered a column of type `character`. A `character` can be safely cast as an `integer`, but a `factor` cannot; R will silently change them to an ordered sequence, completely corrupting and invalidating the data (ie, the sequence 1,100,1000 is changed to 1,2,3). If a user forgets to set `stringsAsFactors = FALSE` and trusts the error message, they can essentially randomized thier results without R or DESeq2 warning them. The user is ultimately responsible for their types. However given that R promotes the accidental use of factors, has default behavior that corrupts such data silently, and that R users are often investigators from other disciplines who may not have experience coding, steps to reduce the chance of error may be helpful. 
+When using DESeq2 Passing a `data.frame` containing a column of type `factor` results in an error message stating the user has entered a column of type `character`. A `character` can be safely cast as an `integer`, but a `factor` cannot; R will silently change them to an ordered sequence, completely corrupting and invalidating the data (ie, the sequence 1, 100, 1000 is changed to 1, 2, 3). If a user forgets to set `stringsAsFactors = FALSE` and depends too heavily om the error message, they can essentially randomized thier results without R or DESeq2 warning them. The user is ultimately responsible for their types. However given that R promotes the accidental use of factors, has default behavior that corrupts such data silently, and that R users are often investigators from other disciplines who may not have experience coding, steps to reduce the chance of error may be helpful. 
+
+After being sent some bad data, I observed what I think is a bug in which DESeq2 misdiagnoses user input containing factors. The error does no harm in and of itself, but if a user takes what seems like a reasonable next step based on the error message, R's type system will silently invalidate the results. We will need a basic counts file to demonstrate and reproduce the issues, so we will recreate the one from the vignette:
 
 ## Steps to Re-create
+
+### Obtain a counts file
 
 ```{R, message = FALSE}
 
@@ -43,11 +47,13 @@ rownames(coldata) <- sub("fb", "", rownames(coldata))
 cts <- cts[, rownames(coldata)]
 ```
 
+### Introduce a character
+
 I found the error after reading in a bad counts matrix file that was given to me. Somewhere in pre-processing a header of some kind had gotten duplicated and nestled a few thousand rows into the counts file. It looked something like this:
     
     sampleName sampleName sampleName sampleName sampleName sampleName sampleName
   
-Perhaps tables had be stacked on top of one another to make the counts file and there was an off-by-one error, I don't know. It can be reproduced like this:
+Perhaps tables had been stacked on top of one another to make the counts file and there was an off-by-one error, I don't know, but is an easy error to imagine making in Bioinformatics and data-related computing in general. It can be reproduced like this:
 
 ```{R}
 
@@ -71,6 +77,8 @@ sapply(ctsBadFile, class)
 ctsBadFile[8597:8602, ]
 ```
 
+### Call DESeqDataSetFromMatrix()
+
 Though we're passing factors. we're told we are passing characters. 
 
 ```{R}
@@ -92,6 +100,8 @@ tryCatch(
 )
 
 ```
+
+## Suspected Cause
 
 The real issue is that characters can be safely coerced to integers, but factors cannot. Moreover, they fail silently and return invalid results. We demonstrate below for the sake of completeness:
 
@@ -137,9 +147,7 @@ message("after coercion")
 ctsBadFileAsInt %>% head(10)
 ```
 
-DESeq2 has excellent documentation, and during routine QC check presented in the vignette, I identified the problem. In the case presented here, the plotMA function makes it clear that something is wrong, but on my initial dataset, the graphs looked passable.
-
-## Root Cause
+DESeq2 has excellent documentation, and during routine QC check presented in the vignette, I identified the problem. In the case presented here, the `plotMA` function makes it clear that something is wrong, but on my initial dataset, the graphs looked passable.
 
 Inspecting the source code of `DESeqDataSetFromMatrix` , we see that there is a coercion of input to type `matrix`, which is reasonable given that most users will pass a `dataframe`. However, passing a `factor` to `as.matrix` will results in another silent conversion of `factor` to `character`. Because DESeq2 checks the types *after* coercion of the inputs, the message given to users the current state after modification, not the nature of the input as it was given. This can be illustrated with a modification to `DESeq2` source code, presented below (my own comments are denoted `### --->` to distinguish them from those of the original author).
 
@@ -156,7 +164,7 @@ DESeqDataSetFromMatrixDebug <- function( countData, colData, design, tidy=FALSE,
     ### ---> what is the class of the count data at this point?
     print(paste("class of countData: ", class(countData)))
     ### ---> what are the classes of each of the columns? (truncated so it isn't too long)
-    print(sapply(countData, class)[1:10])
+    print(sapply(countData, class)[1:5])
   }
   
   ### --->  inital types
@@ -225,7 +233,6 @@ tryCatch(
 )
 ```
 
-
 This behavior can be confirmed in base R.
 
 ```{R}
@@ -235,6 +242,8 @@ class(iris[,5])
 class(as.matrix(iris)[,5])
 ```
 
+## Potential Solution
+
 The actual warning is raised in a separate function called `DESeqDataSet`, which is wrapped by `DESeqDataSetFromMatrix`. `DESeqDataSetFromMatrix`, however, could check for factors (or do whatever type-checking desired) before passing the input to `DESeqDataSet`. An example might look like this:
 
 ```{R}
@@ -243,6 +252,10 @@ DESeqDataSetFromMatrixDebugFactorSafe <- function( countData, colData, design, t
 {
   ### ---> checking for factors initially
   if(isFALSE(length(which(sapply(countData, is.factor))) == 0)){
+    
+    print("Error: inputs of type factor cannot be safely coerced to type integer.",
+          "Please inspect input, and convert factors to characters before casting as integer")
+    
     stop(
       paste("Error: inputs of type factor cannot be safely coerced to type integer.",
             "Please inspect input, and convert factors to characters before casting as integer")
