@@ -2,6 +2,7 @@
 title: "Possible Error Message Bug in DESeq2"
 output:
   pdf_document: default
+  word_document: default
   html_document: default
 ---
 
@@ -81,7 +82,7 @@ ctsBadFile[8597:8602, ]
 
 Though we're passing factors. we're told we are passing characters. 
 
-```{R}
+```{R, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
 
 # make the input the corrected sized matrix
 ctsBadFile$X <- NULL
@@ -89,16 +90,20 @@ ctsBadFile$X <- NULL
 # demonstrate that we're passing factors
 sapply(ctsBadFile, class)
 
-tryCatch(
+error <- tryCatch(
   {
     # try to use the bad one
     dds <- DESeqDataSetFromMatrix(countData = ctsBadFile,
                                   colData = coldata, design = ~ condition)
   },
   # "upon error 'e', use this function to show a message of 'e'"
-  error = function(e) { print(e)}
+  error = function(e) { return(e)}
 )
 
+# show the error messagge (just splitting it because it is long)
+errorMessage <- unlist(str_split(error, ":"))
+
+cat("\n", errorMessage[2], errorMessage[3])
 ```
 
 ## Suspected Cause
@@ -123,17 +128,23 @@ x <- factor(c("1", "10", "100", "1000"))
 as.integer(x)
 ```
 
-The output is effectively unrelated to the input. Given the error message, it's tempting to think one should just change the characters to integers, which is a normal and safe operation:
+The output is effectively unrelated to the input. Given the error message, it's tempting to think one should just change the characters to integers (or numerics), which is a normal and safe operation:
 
 ```{R}
 
 # apply the fix insinutated by the error message
 ctsBadFileAsInt <- ctsBadFile %>%
-  mutate_all(as.numeric())
+  mutate_all(as.integer)
 
-ctsBadFile
-ctsBadFileAsInt
+ctsBadFileAsNumeric <- ctsBadFile %>%
+  mutate_all(as.numeric)
+
+ctsBadFile %>% head()
+ctsBadFileAsInt %>% head()
+ctsBadFileAsNumeric %>% head()
 ```
+
+We see that the 
 
 However, we don't actually have characters, we have factors, so we coerce our data to something only vaguely based on the actual values:
 
@@ -317,7 +328,7 @@ tryCatch(
     dds <- DESeqDataSetFromMatrixDebugFactorSafe(countData = ctsBadFile,
                                                     colData = coldata, design = ~ condition)
   },
-  error = function(e) { print(e)}
+  error = function(e) { print(e) }
 )
 
 dds <- DESeqDataSetFromMatrixDebugFactorSafe(countData = cts,
