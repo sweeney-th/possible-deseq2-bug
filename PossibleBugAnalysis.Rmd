@@ -232,7 +232,7 @@ tryCatch(
                                        colData = coldata, design = ~ condition)
   },
   # "upon error 'e', use this function to show a message of 'e'"
-  error = function(e) { message(e) }
+  error = function(e) { print(e) }
 )
 ```
 
@@ -317,7 +317,7 @@ tryCatch(
     dds <- DESeqDataSetFromMatrixDebugFactorSafe(countData = ctsBadFile,
                                                     colData = coldata, design = ~ condition)
   },
-  error = function(e) { message(e)}
+  error = function(e) { print(e)}
 )
 
 dds <- DESeqDataSetFromMatrixDebugFactorSafe(countData = cts,
