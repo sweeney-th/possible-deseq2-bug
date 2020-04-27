@@ -1,28 +1,40 @@
 ---
-title: "Possible Error Message Bug in DESeq2"
+title: "A Case study in Silent Data Corruption in an RNA-Seq Experiment"
+subtitle: "A bad counts file, an incorrect error message, and counter-intuitive R behavior converge to create a plausible scenario for silent results corruption"
+author: "Thadryan J. Sweeney"
 output:
   pdf_document: default
   word_document: default
   html_document: default
 ---
 
-This report highlights a potential bug in an error message in DESeq2's `DESeqDataSetFromMatrix`. While it causes no harm to the data, it can mislead an inexperienced user in such a way as to compromise the results of an analysis.
+This report describes a series of small issues that can converge such that an `DESeq2` analysis runs from start to finish and raises no errors, but silently corrupts and invalidates the data, producing results that may or may not seem feasible. I observed it in practice and detected it using DESeq2's quality control functions. It seemed all-too-plausible that the situation could arise in other projects, so I've documented it for study. If nothing else, it can serve as a reminder of some easily forgotten but counter-intuitive and consequential default behavior of R.
 
 ## TL;DNR
 
-When using DESeq2 Passing a `data.frame` containing a column of type `factor` results in an error message stating the user has entered a column of type `character`. A `character` can be safely cast as an `integer`, but a `factor` cannot; R will silently change them to an ordered sequence, completely corrupting and invalidating the data (ie, the sequence 1, 100, 1000 is changed to 1, 2, 3). If a user forgets to set `stringsAsFactors = FALSE` and depends too heavily om the error message, they can essentially randomized thier results without R or DESeq2 warning them. The user is ultimately responsible for their types. However given that R promotes the accidental use of factors, has default behavior that corrupts such data silently, and that R users are often investigators from other disciplines who may not have experience coding, steps to reduce the chance of error may be helpful. 
+If a stray character exists in a file being used as a counts matrix, R will read the affected columns of the dataset as `factor`s instead of `integer`s or `numeric`s (in my case, a header row was duplicated several thousand rows into the file, affecting them all).
 
-After being sent some bad data, I observed what I think is a bug in which DESeq2 misdiagnoses user input containing factors. The error does no harm in and of itself, but if a user takes what seems like a reasonable next step based on the error message, R's type system will silently invalidate the results. We will need a basic counts file to demonstrate and reproduce the issues, so we will recreate the one from the vignette:
+Though we're passing `factor`s, `DESeq2` will raise an error stating that the user has passed `character`s and should be passing numeric.
+
+A `character` can be safely cast as an `integer`, but a `factor` cannot; R will silently convert to an ordered sequence, completely invalidating the data (ie, the sequence 1, 100, 1000 is changed to 1, 2, 3).
+
+This new, incorrect dataset will run without errors, but is basically unrelated to what the user intends to analyze. 
+
+*Note:* a bug report has been filed and the error message updated. Click [here](https://support.bioconductor.org/p/130310/#130371) for link.
 
 ## Steps to Re-create
 
+We will re-create the issues using the sample analysis from the `DESeq2` vignette. 
+
 ### Obtain a counts file
+
+This snippet simply loads a counts file in accordance with the documentation of DESeq2.
 
 ```{R, message = FALSE}
 
 library(DESeq2)    # go-to DE analysis package
 library(pasilla)   # sample data used in tutorial
-library(tidyverse) # duh 
+library(tidyverse) # data manipulation 
 
 # get the counts information from the pasilla package
 pasCts <- system.file("extdata", "pasilla_gene_counts.tsv",
@@ -50,7 +62,7 @@ cts <- cts[, rownames(coldata)]
 
 ### Introduce a character
 
-I found the error after reading in a bad counts matrix file that was given to me. Somewhere in pre-processing a header of some kind had gotten duplicated and nestled a few thousand rows into the counts file. It looked something like this:
+I found the issue after reading in a bad counts matrix file that was given to me. Somewhere in pre-processing a header of some kind had gotten duplicated and nestled a few thousand rows into the counts file. It looked something like this:
     
     sampleName sampleName sampleName sampleName sampleName sampleName sampleName
   
@@ -60,27 +72,33 @@ Perhaps tables had been stacked on top of one another to make the counts file an
 
 ctsBad <- cts
 
+# add a character row
 ctsBad[8600, ] <- c("here", "there", "and", "everywhere", "yeah", "whoo!", "oops!")
 
+# inspect
 ctsBad[8597:8602, ]
 
+# write to a file
 write.csv(ctsBad, "badCounts.csv")
 ```
 
-When we write the data to a file, the well-know-but-still-menacing factor default issues comes in to play. However, DESeq2 appears to misdiagnose the types. To see how, we first read in the file. 
+When we read the data from a file, the well-known-but-still-menacing factor default issues comes in to play. However, `DESeq2` appears to misdiagnose the types. To see how, we first read in the file with the bad row in it. 
 
 ```{R}
 
 ctsBadFile <- read.delim("badCounts.csv", sep = ",")
 
+# we're no longer getting integers
 sapply(ctsBadFile, class)
 
 ctsBadFile[8597:8602, ]
 ```
 
+This behavior is consistently tricky, but well-documented (and thankfully, changing). It becomes a more complex issue when mixed with a misleading error message and some more counter-intuitive bahavior.
+
 ### Call DESeqDataSetFromMatrix()
 
-Though we're passing factors. we're told we are passing characters. 
+We can now observe that passing `factor`s results in being warned we are passing `character`s.
 
 ```{R, tidy=TRUE, tidy.opts=list(width.cutoff=60)}
 
@@ -92,8 +110,8 @@ sapply(ctsBadFile, class)
 
 error <- tryCatch(
   {
-    # try to use the bad one
-    dds <- DESeqDataSetFromMatrix(countData = ctsBadFile,
+    # try to use the bad one, pass as matrix for sake of consistency
+    dds <- DESeqDataSetFromMatrix(countData = ctsBadFile %>% as.matrix(),
                                   colData = coldata, design = ~ condition)
   },
   # "upon error 'e', use this function to show a message of 'e'"
@@ -106,29 +124,7 @@ errorMessage <- unlist(str_split(error, ":"))
 cat("\n", errorMessage[2], errorMessage[3])
 ```
 
-## Suspected Cause
-
-The real issue is that characters can be safely coerced to integers, but factors cannot. Moreover, they fail silently and return invalid results. We demonstrate below for the sake of completeness:
-
-```{R}
-
-# a vector of integers
-x <- c("1", "10", "100", "1000")
-
-as.integer(x)
-```
-
-When you do that to a list of factors however, you get a deeply problematic and counter-intuitive result:
-
-```{R}
-
-# the same, as a factor
-x <- factor(c("1", "10", "100", "1000"))
-
-as.integer(x)
-```
-
-The output is effectively unrelated to the input. Given the error message, it's tempting to think one should just change the characters to integers (or numerics), which is a normal and safe operation:
+We see that `DESeq2` informs us we're passing `character`s, though we have actually passed `factor`s (a possible explanation of why this happens is presented in the analysis included with the bug report. Click [here](https://support.bioconductor.org/p/130310/#130371)) to view. The implied fix is to convert the dataset to `numeric`s or `integer`s. However, either of those steps result in silent data corruption because `factor`s cannot be coerced to `integer`s or `numeric`s safely even though `character`s can. The problem is demonstrated below (an atomic, reproducible example of the related behavior is included at the bottom of the report).
 
 ```{R}
 
@@ -138,203 +134,110 @@ ctsBadFileAsInt <- ctsBadFile %>%
 
 ctsBadFileAsNumeric <- ctsBadFile %>%
   mutate_all(as.numeric)
+```
 
+We can then see the dataset before and after coercion. Before:
+
+```{R}
+
+# inspect the original and factor versions
+cts %>% head()
 ctsBadFile %>% head()
+```
+
+After: 
+
+```{R}
+
 ctsBadFileAsInt %>% head()
 ctsBadFileAsNumeric %>% head()
 ```
 
-We see that the 
-
-However, we don't actually have characters, we have factors, so we coerce our data to something only vaguely based on the actual values:
+We can get some intuition for the shift with a quick, if hacky, plot:
 
 ```{R}
 
-# observe results
-message("original")
-cts %>% head(10)
+bin <- 1000
 
-message("bad file")
-ctsBadFile %>% head(10)
+# the original dataset
+ggplot(gather(data.frame(cts)), aes(value)) + 
+    geom_histogram(bins = bin) + 
+    facet_wrap(~key) +
+    ylim(0, 100) +
+    ggtitle("Before Coercion")
 
-message("after coercion")
-ctsBadFileAsInt %>% head(10)
+# the corrupted one
+ggplot(gather(data.frame(ctsBadFileAsInt)), aes(value)) + 
+    geom_histogram(bins = bin) + 
+    facet_wrap(~key) +
+    ylim(0, 100) +
+    ggtitle("After Coercion")
+
 ```
 
-DESeq2 has excellent documentation, and during routine QC check presented in the vignette, I identified the problem. In the case presented here, the `plotMA` function makes it clear that something is wrong, but on my initial dataset, the graphs looked passable.
+Either of these corrupted datasets will run without error:
 
-Inspecting the source code of `DESeqDataSetFromMatrix` , we see that there is a coercion of input to type `matrix`, which is reasonable given that most users will pass a `dataframe`. However, passing a `factor` to `as.matrix` will results in another silent conversion of `factor` to `character`. Because DESeq2 checks the types *after* coercion of the inputs, the message given to users the current state after modification, not the nature of the input as it was given. This can be illustrated with a modification to `DESeq2` source code, presented below (my own comments are denoted `### --->` to distinguish them from those of the original author).
+````{R}
+
+ddsBadInt <- DESeqDataSetFromMatrix(countData = ctsBadFileAsInt,
+                                    colData = coldata, design = ~ condition)
+```
+
+This warns that the `numeric`s are being converted to integer (a safe operation).
 
 ```{R}
 
-DESeqDataSetFromMatrixDebug <- function( countData, colData, design, tidy=FALSE, ignoreRank=FALSE, ... )
-{
-  
-  ### ---> a function to observe types at a given time point
-  printDebugOutput <- function(tag)
-  {
-    ### ---> so we can pass an identifier of some kind
-    message(tag)
-    ### ---> what is the class of the count data at this point?
-    print(paste("class of countData: ", class(countData)))
-    ### ---> what are the classes of each of the columns? (truncated so it isn't too long)
-    print(sapply(countData, class)[1:5])
-  }
-  
-  ### --->  inital types
-  printDebugOutput("initial")
-
-  if (tidy) {
-    stopifnot(ncol(countData) > 1)
-    rownms <- as.character(countData[,1])
-    countData <- countData[,-1,drop=FALSE]
-    rownames(countData) <- rownms
-  }
-
-  # check that these agree in number
-  stopifnot(ncol(countData) == nrow(colData))
-  
-  ### ---> there is a coercion to type matrix
-  # we expect a matrix of counts, which are non-negative integers
-  countData <- as.matrix( countData )
-
-  ### ---> reobserve the types
-  printDebugOutput("after coercion to matrix")
-
-  ### ---> the code is unchanged after this point
-  
-  
-  
-  if (is(colData,"data.frame"))
-    colData <- as(colData, "DataFrame")
-  
-  # check if the rownames of colData are simply in different order
-  # than the colnames of the countData, if so throw an error
-  # as the user probably should investigate what's wrong
-  if (!is.null(rownames(colData)) & !is.null(colnames(countData))) {
-    if (all(sort(rownames(colData)) == sort(colnames(countData)))) {
-      if (!all(rownames(colData) == colnames(countData))) {
-        stop(paste("rownames of the colData:
-  ",paste(rownames(colData),collapse=","),"
-  are not in the same order as the colnames of the countData:
-  ",paste(colnames(countData),collapse=",")))
-      }
-    }
-  }
-  if (is.null(rownames(colData)) & !is.null(colnames(countData))) {
-    rownames(colData) <- colnames(countData)
-  }
-  
-  se <- SummarizedExperiment(assays = SimpleList(counts=countData), colData = colData, ...)
-  object <- DESeqDataSet(se, design = design, ignoreRank)
-
-  return(object)
-}
+ddsBadNumeric <- DESeqDataSetFromMatrix(countData = ctsBadFileAsNumeric,
+                                        colData = coldata, design = ~ condition)
 ```
 
-We can use this function to check the types:
+## Prevention
+
+I have taken to including a line like this in my read-in scripts:
+
+    stopifnot(is.null(names(Filter(is.factor, ctsBadFile))))
 
 ```{R}
 
 tryCatch(
   {
-    # try to use the bad one
-    dds <- DESeqDataSetFromMatrixDebug(countData = ctsBadFile,
-                                       colData = coldata, design = ~ condition)
+    stopifnot(is.null(names(Filter(is.factor, ctsBadFile))))
   },
-  # "upon error 'e', use this function to show a message of 'e'"
-  error = function(e) { print(e) }
+  error = function(m){ print(m) }
 )
 ```
 
-This behavior can be confirmed in base R.
+## Comments
+
+This is not a criticism of `DESeq2`. This is not to say that the analyst is not responsible for understanding their types. It is merely an effort to identify a potential source of error and reduce it. It's not hard to imagine a stray character row finding it's way into a counts file, and a hurried analyst not noticing and following a misleading error. I propose that it is especially important to be vigilant about type-related bugs given that many R users are investigators from other disciples who may not have experience programming, and even if they do, are likely to have it in a language where type-awareness is not necessarily required or promoted.
+
+I am aware that the eternal confounder `stringsAsFactors=TRUE` was addressed in the newest release of R, which is progress. It makes this scenario markedly less likely, though not impossible. The other issues addressed are still worth refreshing on, especially the silent coercion issue. 
+
+## Atomic Example of Factor Behavior
+
+An atomic example of this troubling behavior may illuminate the issue. `character`s can be safely coerced to `integer`s, but `factor`s cannot. Moreover, they fail silently and return invalid results. We demonstrate below for the sake of completeness:
 
 ```{R}
 
-class(iris[,5])
+# a vector of integers
+x <- c("1", "10", "100", "1000")
 
-class(as.matrix(iris)[,5])
+as.integer(x)
 ```
 
-## Potential Solution
-
-The actual warning is raised in a separate function called `DESeqDataSet`, which is wrapped by `DESeqDataSetFromMatrix`. `DESeqDataSetFromMatrix`, however, could check for factors (or do whatever type-checking desired) before passing the input to `DESeqDataSet`. An example might look like this:
+When you do that to a vector of `factor`s however, you silently receive a counter-intuitive result:
 
 ```{R}
 
-DESeqDataSetFromMatrixDebugFactorSafe <- function( countData, colData, design, tidy=FALSE, ignoreRank=FALSE, ... )
-{
-  ### ---> checking for factors initially
-  if(isFALSE(length(which(sapply(countData, is.factor))) == 0)){
-    
-    print("Error: inputs of type factor cannot be safely coerced to type integer.",
-          "Please inspect input, and convert factors to characters before casting as integer")
-    
-    stop(
-      paste("Error: inputs of type factor cannot be safely coerced to type integer.",
-            "Please inspect input, and convert factors to characters before casting as integer")
-    )
-  }
-  ### ---> the code is unchanged after this point
-  
-  if (tidy) {
-    stopifnot(ncol(countData) > 1)
-    rownms <- as.character(countData[,1])
-    countData <- countData[,-1,drop=FALSE]
-    rownames(countData) <- rownms
-  }
+# the same, as a factor
+x <- factor(c("1", "10", "100", "1000"))
 
-  # check that these agree in number
-  stopifnot(ncol(countData) == nrow(colData))
-  
-  # we expect a matrix of counts, which are non-negative integers
-  countData <- as.matrix( countData )
-
-  if (is(colData,"data.frame"))
-    colData <- as(colData, "DataFrame")
-  
-  # check if the rownames of colData are simply in different order
-  # than the colnames of the countData, if so throw an error
-  # as the user probably should investigate what's wrong
-  if (!is.null(rownames(colData)) & !is.null(colnames(countData))) {
-    if (all(sort(rownames(colData)) == sort(colnames(countData)))) {
-      if (!all(rownames(colData) == colnames(countData))) {
-        stop(paste("rownames of the colData:
-  ",paste(rownames(colData),collapse=","),"
-  are not in the same order as the colnames of the countData:
-  ",paste(colnames(countData),collapse=",")))
-      }
-    }
-  }
-  if (is.null(rownames(colData)) & !is.null(colnames(countData))) {
-    rownames(colData) <- colnames(countData)
-  }
-  
-  se <- SummarizedExperiment(assays = SimpleList(counts=countData), colData = colData, ...)
-  object <- DESeqDataSet(se, design = design, ignoreRank)
-
-  return(object)
-}
+as.integer(x)
 ```
 
-This should prevent the error without interfering with the normal function of the program:
+## Session Info
 
 ```{R}
 
-# do we catch the bad one?
-tryCatch(
-  {
-    # try to use the bad one
-    dds <- DESeqDataSetFromMatrixDebugFactorSafe(countData = ctsBadFile,
-                                                    colData = coldata, design = ~ condition)
-  },
-  error = function(e) { print(e) }
-)
-
-dds <- DESeqDataSetFromMatrixDebugFactorSafe(countData = cts,
-                                             colData = coldata, design = ~ condition)
-
-# do we allow the good one?
-DESeq(dds)
+sessionInfo()
 ```
-
