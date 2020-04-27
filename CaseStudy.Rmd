@@ -8,19 +8,19 @@ output:
   html_document: default
 ---
 
-This report describes a series of small issues that can converge such that an `DESeq2` analysis runs from start to finish and raises no errors, but silently corrupts and invalidates the data, producing results that may or may not seem feasible. I observed it in practice and detected it using DESeq2's quality control functions. It seemed all-too-plausible that the situation could arise in other projects, so I've documented it for study. If nothing else, it can serve as a reminder of some easily forgotten but counter-intuitive and consequential default behavior of R.
+This report describes a series of small issues that can converge such that a `DESeq2` analysis runs from start to finish and raises no errors, but silently corrupts and invalidates the data. The results may or may not seem feasible enough to alert the analyst upon initial inspection. I observed it in practice and detected it using DESeq2's quality control functions. It seemed all-too-plausible that the situation could arise in other projects, so I've documented it for study. If nothing else, it can serve as a reminder of some easily forgotten but counter-intuitive and consequential default behavior of R.
 
 ## TL;DNR
 
 If a stray character exists in a file being used as a counts matrix, R will read the affected columns of the dataset as `factor`s instead of `integer`s or `numeric`s (in my case, a header row was duplicated several thousand rows into the file, affecting them all).
 
-Though we're passing `factor`s, `DESeq2` will raise an error stating that the user has passed `character`s and should be passing numeric.
+Though we're passing `factor`s, `DESeq2` will raise an error stating that the user has passed `character`s and should be passing `numeric`s.
 
-A `character` can be safely cast as an `integer`, but a `factor` cannot; R will silently convert to an ordered sequence, completely invalidating the data (ie, the sequence 1, 100, 1000 is changed to 1, 2, 3).
+A `character` can be safely cast as an `integer` or `numeric`, but a `factor` cannot; R will silently convert to a ranked sequence, completely invalidating the data (for example, the sequence 1, 100, 1000 is changed to 1, 2, 3).
 
 This new, incorrect dataset will run without errors, but is basically unrelated to what the user intends to analyze. 
 
-*Note:* a bug report has been filed and the error message updated. Click [here](https://support.bioconductor.org/p/130310/#130371) for link.
+*Note:* a bug report has been filed on Bioconductor and the error message updated. Click [here](https://support.bioconductor.org/p/130310/#130371) for the link.
 
 ## Steps to Re-create
 
@@ -66,7 +66,7 @@ I found the issue after reading in a bad counts matrix file that was given to me
     
     sampleName sampleName sampleName sampleName sampleName sampleName sampleName
   
-Perhaps tables had been stacked on top of one another to make the counts file and there was an off-by-one error, I don't know, but is an easy error to imagine making in Bioinformatics and data-related computing in general. It can be reproduced like this:
+Perhaps tables had been stacked on top of one another to make the counts file and there was an off-by-one error, I don't know, but it is an easy error to imagine making in Bioinformatics and data-related computing in general. It can be reproduced like this:
 
 ```{R}
 
@@ -82,7 +82,7 @@ ctsBad[8597:8602, ]
 write.csv(ctsBad, "badCounts.csv")
 ```
 
-When we read the data from a file, the well-known-but-still-menacing factor default issues comes in to play. However, `DESeq2` appears to misdiagnose the types. To see how, we first read in the file with the bad row in it. 
+When we read the data from a file, the well-known-but-still-menacing factor default issues comes in to play. However, `DESeq2` appears to misdiagnose the types. To see how, we first read in the file with the bad row. 
 
 ```{R}
 
@@ -110,8 +110,8 @@ sapply(ctsBadFile, class)
 
 error <- tryCatch(
   {
-    # try to use the bad one, pass as matrix for sake of consistency
-    dds <- DESeqDataSetFromMatrix(countData = ctsBadFile %>% as.matrix(),
+    # try to use the bad one
+    dds <- DESeqDataSetFromMatrix(countData = ctsBadFile,
                                   colData = coldata, design = ~ condition)
   },
   # "upon error 'e', use this function to show a message of 'e'"
@@ -124,7 +124,7 @@ errorMessage <- unlist(str_split(error, ":"))
 cat("\n", errorMessage[2], errorMessage[3])
 ```
 
-We see that `DESeq2` informs us we're passing `character`s, though we have actually passed `factor`s (a possible explanation of why this happens is presented in the analysis included with the bug report. Click [here](https://support.bioconductor.org/p/130310/#130371)) to view. The implied fix is to convert the dataset to `numeric`s or `integer`s. However, either of those steps result in silent data corruption because `factor`s cannot be coerced to `integer`s or `numeric`s safely even though `character`s can. The problem is demonstrated below (an atomic, reproducible example of the related behavior is included at the bottom of the report).
+We see that `DESeq2` informs us we're passing `character`s, though we have actually passed `factor`s (a detailed possible explanation of why this happens is presented in the analysis included with the bug report. Click [here](https://drive.google.com/file/d/1Trr0lbMklHpPTWuQdrA4zujd7q_30t4m/view)) to view it. The implied fix is to convert the dataset to `numeric`s or `integer`s. However, either of those steps result in silent data corruption because `factor`s cannot be coerced to `integer`s or `numeric`s safely even though `character`s can. The problem is demonstrated below (an atomic, reproducible example of the related behavior is included at the bottom of the report).
 
 ```{R}
 
@@ -183,7 +183,7 @@ ddsBadInt <- DESeqDataSetFromMatrix(countData = ctsBadFileAsInt,
                                     colData = coldata, design = ~ condition)
 ```
 
-This warns that the `numeric`s are being converted to integer (a safe operation).
+This warns that the `numeric`s are being converted to `integer` (a safe operation).
 
 ```{R}
 
@@ -209,7 +209,7 @@ tryCatch(
 
 ## Comments
 
-This is not a criticism of `DESeq2`. This is not to say that the analyst is not responsible for understanding their types. It is merely an effort to identify a potential source of error and reduce it. It's not hard to imagine a stray character row finding it's way into a counts file, and a hurried analyst not noticing and following a misleading error. I propose that it is especially important to be vigilant about type-related bugs given that many R users are investigators from other disciples who may not have experience programming, and even if they do, are likely to have it in a language where type-awareness is not necessarily required or promoted.
+This is not a criticism of `DESeq2`. This is not to say that the analyst is not responsible for understanding their types. It is merely an effort to identify a potential source of error and reduce it. It's not hard to imagine a stray character row finding it's way into a counts file, and a hurried analyst not noticing and following a misleading error. I propose that it is especially important to be vigilant about type-related bugs given that many R users are investigators from other disciples who may not have experience programming, and even if they do, are likely to have it in a language where type-awareness is not necessarily required or promoted (as in R itself).
 
 I am aware that the eternal confounder `stringsAsFactors=TRUE` was addressed in the newest release of R, which is progress. It makes this scenario markedly less likely, though not impossible. The other issues addressed are still worth refreshing on, especially the silent coercion issue. 
 
