@@ -8,6 +8,7 @@ output:
   html_document: default
 ---
 
+
 This report describes a series of small issues that can converge such that a `DESeq2` analysis runs from start to finish and raises no errors, but silently corrupts and invalidates the data. The results may or may not seem feasible enough to alert the analyst upon initial inspection. I observed it in practice and detected it using DESeq2's quality control functions. It seemed all-too-plausible that the situation could arise in other projects, so I've documented it for study. If nothing else, it can serve as a reminder of some easily forgotten but counter-intuitive and consequential default behavior of R.
 
 ## TL;DNR
