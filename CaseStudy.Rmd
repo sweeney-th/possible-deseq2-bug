@@ -173,7 +173,6 @@ ggplot(gather(data.frame(ctsBadFileAsInt)), aes(value)) +
     facet_wrap(~key) +
     ylim(0, 100) +
     ggtitle("After Coercion")
-
 ```
 
 Either of these corrupted datasets will run without error:
